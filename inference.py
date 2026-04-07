@@ -16,6 +16,11 @@ import json
 
 from environment import CodeReviewEnv
 
+# ── Environment variables ───────────────────────────────────────────
+API_BASE_URL = os.environ.get("API_BASE_URL", "https://api.openai.com/v1")
+MODEL_NAME   = os.environ.get("MODEL_NAME", "gpt-4o")
+HF_TOKEN     = os.environ.get("HF_TOKEN", "")
+
 # ── LLM prompt ─────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = """\
@@ -39,11 +44,11 @@ def _call_llm(buggy_code: str) -> dict:
 
     client = openai.OpenAI(
         api_key=os.environ.get("OPENAI_API_KEY"),
-        base_url=os.environ.get("API_BASE_URL", None),
+        base_url=API_BASE_URL,
     )
 
     response = client.chat.completions.create(
-        model=os.environ.get("MODEL_NAME", "gpt-4o"),
+        model=MODEL_NAME,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user",   "content": f"Review this code:\n\n{buggy_code}"},
@@ -53,12 +58,10 @@ def _call_llm(buggy_code: str) -> dict:
 
     raw = (response.choices[0].message.content or "").strip()
 
-    # Extract JSON from markdown code block if present
     md_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw)
     if md_match:
         raw = md_match.group(1).strip()
     else:
-        # Fall back to finding the first {...} block in the response
         brace_match = re.search(r"\{[\s\S]*\}", raw)
         raw = brace_match.group(0) if brace_match else raw
 
@@ -77,7 +80,7 @@ def _reflect_action(buggy_code: str, first_action: dict) -> dict:
 
         client = openai.OpenAI(
             api_key=os.environ.get("OPENAI_API_KEY"),
-            base_url=os.environ.get("API_BASE_URL", None),
+            base_url=API_BASE_URL,
         )
 
         bug_line = first_action.get("bug_line", 0)
@@ -100,7 +103,7 @@ def _reflect_action(buggy_code: str, first_action: dict) -> dict:
         )
 
         response = client.chat.completions.create(
-            model=os.environ.get("MODEL_NAME", "gpt-4o"),
+            model=MODEL_NAME,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user",   "content": reflection_prompt},
@@ -118,7 +121,6 @@ def _reflect_action(buggy_code: str, first_action: dict) -> dict:
 
         parsed = json.loads(raw)
 
-        # Validate required keys and types
         if not isinstance(parsed.get("bug_line"), int):
             return first_action
         if not isinstance(parsed.get("issues"), list):
@@ -161,11 +163,6 @@ def get_action(buggy_code: str) -> dict:
         except Exception as re_:
             print(f"[WARN] Reflection failed ({re_}) — using initial action.")
 
-        if initial_action.get("fix") != refined_action.get("fix"):
-            print("[REFLECTION] fix improved")
-        else:
-            print("[REFLECTION] no change")
-
         action   = refined_action
         bug_line = int(action.get("bug_line", 0))
         issues   = action.get("issues", [])
@@ -174,8 +171,13 @@ def get_action(buggy_code: str) -> dict:
             issues = [str(issues)]
         if not isinstance(fix, str):
             fix = buggy_code
-        return {"bug_line": bug_line, "issues": issues, "fix": fix,
-                "used_reflection": used_reflection, "_initial_action": initial_action}
+        return {
+            "bug_line": bug_line,
+            "issues": issues,
+            "fix": fix,
+            "used_reflection": used_reflection,
+            "_initial_action": initial_action,
+        }
     except Exception as e:
         print(f"[WARN] LLM call failed ({e}) — using fallback action.")
         return _fallback(buggy_code)
@@ -196,14 +198,27 @@ def main():
 
     buggy_code = obs.get("buggy_code", "")
 
+    # ── [START] log ────────────────────────────────────────────────
     print("[START]")
-    print(f"task_id    : {obs.get('task_id')}")
-    print(f"difficulty : {obs.get('difficulty')}")
-    print()
+    print(json.dumps({
+        "task_id":    obs.get("task_id"),
+        "difficulty": obs.get("difficulty"),
+        "model":      MODEL_NAME,
+        "api_base":   API_BASE_URL,
+    }))
 
     action         = get_action(buggy_code)
     initial_action = action.pop("_initial_action", None)
+    used_reflection = action.pop("used_reflection", False)
 
+    # ── [STEP] log ────────────────────────────────────────────────
+    print("[STEP]")
+    print(json.dumps({
+        "bug_line":       action.get("bug_line"),
+        "issues":         action.get("issues"),
+        "fix_length":     len(action.get("fix", "")),
+        "used_reflection": used_reflection,
+    }))
 
     try:
         result = env.step(action)
@@ -211,13 +226,23 @@ def main():
         print(f"[WARN] env.step failed ({e}) — using default result.")
         result = {"state": {}, "reward": 0.0, "done": True}
 
-    print(f"action     : {json.dumps(action, indent=2)}")
-    print(f"reflection_used: {action.get('used_reflection', False)}")
-    print()
-    print(f"reward     : {result.get('reward', 0)}")
-    issue_score = (env._last_result or {}).get("issue_score", 0)
-    print(f"issue_score: {issue_score}")
+    lr = env._last_result or {}
+
+    # ── [END] log ─────────────────────────────────────────────────
     print("[END]")
+    print(json.dumps({
+        "task_id":       obs.get("task_id"),
+        "reward":        result.get("reward", 0.0),
+        "issue_score":   lr.get("issue_score", 0.0),
+        "line_score":    lr.get("line_score", 0.0),
+        "compile_score": lr.get("compile_score", 0.0),
+        "test_score":    lr.get("test_score", 0.0),
+        "tests_passed":  lr.get("tests_passed", 0),
+        "tests_total":   lr.get("tests_total", 0),
+        "penalty":       lr.get("penalty", 0.0),
+        "done":          result.get("done", True),
+    }))
+
     env.leaderboard()
 
 

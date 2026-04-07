@@ -1,0 +1,115 @@
+name: smart-code-review
+version: "1.0"
+description: >
+  An AI-powered code review environment where agents identify bugs,
+  classify them, and submit fixes. Scored on accuracy, line identification,
+  compile success, and test case results.
+
+env_class: CodeReviewEnv
+env_module: environment
+
+interface:
+  reset:
+    description: Load a task (random or by task_id) and return observation
+    input:
+      task_id:
+        type: string
+        required: false
+        description: One of easy_off_by_one, medium_mutable_default, hard_missing_validation
+    output:
+      task_id:
+        type: string
+      difficulty:
+        type: string
+        enum: [easy, medium, hard]
+      title:
+        type: string
+      description:
+        type: string
+      buggy_code:
+        type: string
+      done:
+        type: boolean
+
+  step:
+    description: Submit a bug fix action and receive a reward
+    input:
+      bug_line:
+        type: integer
+        description: Line number of the bug (1-indexed)
+      issues:
+        type: array
+        items:
+          type: string
+        description: List of bug descriptions
+      fix:
+        type: string
+        description: Corrected Python code
+    output:
+      state:
+        type: object
+      reward:
+        type: number
+        minimum: 0.0
+        maximum: 1.0
+      done:
+        type: boolean
+
+  state:
+    description: Return current environment state at any point
+    output:
+      task_id:
+        type: string
+      difficulty:
+        type: string
+      steps_taken:
+        type: integer
+      steps_allowed:
+        type: integer
+      done:
+        type: boolean
+      result:
+        type: object
+
+tasks:
+  - id: easy_off_by_one
+    difficulty: easy
+    bug_type: off-by-one
+    bug_line: 3
+
+  - id: medium_mutable_default
+    difficulty: medium
+    bug_type: mutable-default-argument
+    bug_line: 1
+
+  - id: hard_missing_validation
+    difficulty: hard
+    bug_type: missing-validation
+    bug_line: 7
+
+reward:
+  min: 0.0
+  max: 1.0
+  description: >
+    Weighted sum: 30% issue description + 20% line identification
+    + 20% compile check + 30% test cases. Time penalty of 0.05
+    per extra step beyond free-step allowance.
+
+scoring:
+  axes:
+    - name: issue_score
+      weight: 0.30
+    - name: line_score
+      weight: 0.20
+    - name: compile_score
+      weight: 0.20
+    - name: test_score
+      weight: 0.30
+
+inference:
+  script: inference.py
+  env_vars:
+    - API_BASE_URL
+    - MODEL_NAME
+    - HF_TOKEN
+    - OPENAI_API_KEY
