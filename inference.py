@@ -1,12 +1,16 @@
 """
 inference.py
 ============
-Runs a single episode of CodeReviewEnv with an optional LLM agent.
+Runs a single episode of CodeReviewEnv with an LLM agent.
 
 Usage:
-    python inference.py                        # random task
-    python inference.py easy_off_by_one        # specific task
-    OPENAI_API_KEY=sk-... python inference.py  # with LLM
+    python inference.py                    # random task
+    python inference.py easy_off_by_one    # specific task
+
+Environment variables (injected by OpenEnv validator):
+    API_BASE_URL  — LiteLLM proxy base URL (required, no default)
+    API_KEY       — LiteLLM proxy API key  (required, no default)
+    MODEL_NAME    — model to use (default: gpt-4o)
 """
 
 import os
@@ -17,9 +21,11 @@ import json
 from environment import CodeReviewEnv
 
 # ── Environment variables ───────────────────────────────────────────
-API_BASE_URL = os.environ.get("API_BASE_URL", "https://api.openai.com/v1")
+# IMPORTANT: API_BASE_URL and API_KEY must come from environment.
+# Do NOT hardcode defaults or use your own credentials.
+API_BASE_URL = os.environ.get("API_BASE_URL")
+API_KEY      = os.environ.get("API_KEY")
 MODEL_NAME   = os.environ.get("MODEL_NAME", "gpt-4o")
-HF_TOKEN     = os.environ.get("HF_TOKEN", "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")
 
 # ── LLM prompt ─────────────────────────────────────────────────────
 
@@ -39,12 +45,12 @@ Respond ONLY with valid JSON in this exact format:
 
 
 def _call_llm(buggy_code: str) -> dict:
-    """Call OpenAI API and return a parsed action dict."""
+    """Call LLM via OpenEnv proxy and return a parsed action dict."""
     import openai
 
     client = openai.OpenAI(
-        api_key=os.environ.get("OPENAI_API_KEY"),
         base_url=API_BASE_URL,
+        api_key=API_KEY,
     )
 
     response = client.chat.completions.create(
@@ -79,8 +85,8 @@ def _reflect_action(buggy_code: str, first_action: dict) -> dict:
         import openai
 
         client = openai.OpenAI(
-            api_key=os.environ.get("OPENAI_API_KEY"),
             base_url=API_BASE_URL,
+            api_key=API_KEY,
         )
 
         bug_line = first_action.get("bug_line", 0)
@@ -143,20 +149,23 @@ def _fallback(buggy_code: str) -> dict:
 # ── Agent ───────────────────────────────────────────────────────────
 
 def get_action(buggy_code: str) -> dict:
-    """Return an action dict, using LLM if available, else fallback."""
-    api_key = os.environ.get("OPENAI_API_KEY", "")
-    if not api_key:
-        print("[INFO] No OPENAI_API_KEY found — using fallback action.")
+    """Return an action dict using the LLM proxy."""
+    if not API_BASE_URL or not API_KEY:
+        print("[INFO] API_BASE_URL or API_KEY not set — using fallback action.")
         return _fallback(buggy_code)
 
     _VALIDATION_KEYWORDS = {"transfer", "balance", "amount"}
     if any(kw in buggy_code for kw in _VALIDATION_KEYWORDS):
-        buggy_code += "\n# Hint: check for negative/zero values, self-transfer, and insufficient funds."
+        buggy_code += (
+            "\n# Hint: check for negative/zero values, "
+            "self-transfer, and insufficient funds."
+        )
 
     try:
         initial_action  = _call_llm(buggy_code)
         refined_action  = initial_action
         used_reflection = False
+
         try:
             refined_action  = _reflect_action(buggy_code, initial_action)
             used_reflection = True
@@ -167,17 +176,20 @@ def get_action(buggy_code: str) -> dict:
         bug_line = int(action.get("bug_line", 0))
         issues   = action.get("issues", [])
         fix      = action.get("fix", buggy_code)
+
         if not isinstance(issues, list):
             issues = [str(issues)]
         if not isinstance(fix, str):
             fix = buggy_code
+
         return {
-            "bug_line": bug_line,
-            "issues": issues,
-            "fix": fix,
+            "bug_line":       bug_line,
+            "issues":         issues,
+            "fix":            fix,
             "used_reflection": used_reflection,
             "_initial_action": initial_action,
         }
+
     except Exception as e:
         print(f"[WARN] LLM call failed ({e}) — using fallback action.")
         return _fallback(buggy_code)
@@ -207,16 +219,16 @@ def main():
         "api_base":   API_BASE_URL,
     }))
 
-    action         = get_action(buggy_code)
-    initial_action = action.pop("_initial_action", None)
+    action          = get_action(buggy_code)
+    initial_action  = action.pop("_initial_action", None)
     used_reflection = action.pop("used_reflection", False)
 
     # ── [STEP] log ────────────────────────────────────────────────
     print("[STEP]")
     print(json.dumps({
-        "bug_line":       action.get("bug_line"),
-        "issues":         action.get("issues"),
-        "fix_length":     len(action.get("fix", "")),
+        "bug_line":        action.get("bug_line"),
+        "issues":          action.get("issues"),
+        "fix_length":      len(action.get("fix", "")),
         "used_reflection": used_reflection,
     }))
 
