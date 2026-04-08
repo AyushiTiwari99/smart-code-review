@@ -24,13 +24,12 @@ api = FastAPI(title="Smart Code Review — OpenEnv API")
 
 _api_env = CodeReviewEnv()
 
-# Scores must be STRICTLY between 0 and 1
 SCORE_FLOOR = 0.01
 SCORE_CEIL  = 0.99
 
 
 def _clamp(score) -> float:
-    """Ensure score is strictly between 0 and 1."""
+    """Ensure score is strictly between 0.01 and 0.99."""
     try:
         return float(max(SCORE_FLOOR, min(SCORE_CEIL, float(score))))
     except Exception:
@@ -38,7 +37,7 @@ def _clamp(score) -> float:
 
 
 def _clamp_result(result: dict) -> dict:
-    """Clamp all score fields in a step result."""
+    """Clamp reward in a step result."""
     if not isinstance(result, dict):
         return result
     if "reward" in result:
@@ -53,12 +52,15 @@ def root():
 
 @api.post("/reset")
 async def api_reset(request: Request):
+    global _api_env
     try:
         body = await request.json()
         task_id = body.get("task_id", None) if isinstance(body, dict) else None
     except Exception:
         task_id = None
     try:
+        # Fresh env instance on every reset — prevents stale state between tasks
+        _api_env = CodeReviewEnv()
         obs = _api_env.reset(task_id)
         return JSONResponse(content=obs)
     except Exception as e:
@@ -82,7 +84,6 @@ async def api_step(request: Request):
 
     try:
         result = _api_env.step(action)
-        # Clamp reward strictly between 0.01 and 0.99 at API level
         result = _clamp_result(result)
         return JSONResponse(content=result)
     except Exception as e:
