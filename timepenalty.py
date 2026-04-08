@@ -13,7 +13,7 @@ Step allowances by difficulty:
 
 Penalty formula:
     penalty      = max(0, steps_taken - allowed) * 0.05
-    final_reward = max(REWARD_FLOOR, min(1.0, base_reward - penalty))
+    final_reward = clamp(base_reward - penalty, REWARD_FLOOR, REWARD_CEIL)
 """
 
 # ── Configuration ──────────────────────────────────────────────────
@@ -22,13 +22,14 @@ STEP_ALLOWANCES = {
     "medium": 3,
     "hard":   4,
 }
-
 PENALTY_PER_EXTRA_STEP = 0.05
-REWARD_FLOOR = 0.1
+
+# Scores must be STRICTLY between 0 and 1 — never exactly 0.0 or 1.0
+REWARD_FLOOR = 0.01
+REWARD_CEIL  = 0.99
 
 
 # ── Public API ─────────────────────────────────────────────────────
-
 def compute_time_penalty(
     base_reward: float,
     steps_taken: int = 0,
@@ -44,7 +45,7 @@ def compute_time_penalty(
 
     Returns:
         {
-            "final_reward":  float,  # penalised score
+            "final_reward":  float,  # penalised score, strictly in (0, 1)
             "base_reward":   float,  # original score
             "steps_taken":   int,
             "steps_allowed": int,    # threshold for this difficulty
@@ -53,26 +54,25 @@ def compute_time_penalty(
         }
     """
     steps_allowed = STEP_ALLOWANCES.get(difficulty, STEP_ALLOWANCES["medium"])
+    extra_steps   = max(0, steps_taken - steps_allowed)
+    penalty       = extra_steps * PENALTY_PER_EXTRA_STEP
 
-    extra_steps = max(0, steps_taken - steps_allowed)
-    penalty = extra_steps * PENALTY_PER_EXTRA_STEP
-
-    final_reward = max(REWARD_FLOOR, min(1.0, base_reward - penalty))
+    # Clamp strictly between REWARD_FLOOR and REWARD_CEIL (never 0.0 or 1.0)
+    final_reward = max(REWARD_FLOOR, min(REWARD_CEIL, base_reward - penalty))
 
     return {
-        "final_reward":  round(float(final_reward), 4),  # type: ignore[arg-type]
-        "base_reward":   round(float(base_reward), 4),   # type: ignore[arg-type]
+        "final_reward":  round(float(final_reward), 4),
+        "base_reward":   round(float(base_reward),  4),
         "steps_taken":   steps_taken,
         "steps_allowed": steps_allowed,
         "extra_steps":   extra_steps,
-        "penalty":       round(float(penalty), 4),       # type: ignore[arg-type]
+        "penalty":       round(float(penalty), 4),
     }
 
 
 # ── Self-test ──────────────────────────────────────────────────────
 if __name__ == "__main__":
     cases = [
-        # (base_reward, steps_taken, difficulty, description)
         (0.80, 2, "easy",    "within allowance — no penalty"),
         (0.80, 4, "easy",    "2 extra steps on easy → -0.10"),
         (0.80, 3, "medium",  "within allowance — no penalty"),
@@ -81,9 +81,9 @@ if __name__ == "__main__":
         (0.90, 8, "hard",    "4 extra steps on hard → -0.20"),
         (0.50, 15, "easy",   "many extra steps — floored at REWARD_FLOOR"),
         (0.00, 10, "easy",   "zero base — floored at REWARD_FLOOR"),
+        (1.00, 1,  "easy",   "perfect score — clamped to REWARD_CEIL"),
         (0.80, 2, "unknown", "unknown difficulty falls back to medium=3"),
     ]
-
     print(f"{'Description':<45} base   steps  allowed  extra  penalty  final")
     print("-" * 95)
     for base, steps, diff, desc in cases:
