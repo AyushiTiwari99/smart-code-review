@@ -1,14 +1,9 @@
 """
 app.py — Smart Code Review · Hugging Face Space
-================================================
-Exposes:
-  - FastAPI REST endpoints  /reset  /step  /state  (for OpenEnv automated checks)
-  - Gradio web UI  (for human interaction)
 """
 
 import os
 import json
-import threading
 import uvicorn
 
 from fastapi import FastAPI
@@ -20,13 +15,7 @@ import gradio as gr
 from environment import CodeReviewEnv
 from tasks import TASKS
 
-# ══════════════════════════════════════════════════════════════════════
-# FastAPI app — OpenEnv REST interface
-# ══════════════════════════════════════════════════════════════════════
-
 api = FastAPI(title="Smart Code Review — OpenEnv API")
-
-# One global env instance for the API
 _api_env = CodeReviewEnv()
 
 
@@ -40,7 +29,7 @@ class StepRequest(BaseModel):
     fix:      Optional[str] = ""
 
 
-@api.get("/")
+@api.get("/api")
 def root():
     return {"status": "ok", "name": "Smart Code Review OpenEnv"}
 
@@ -76,10 +65,6 @@ def state():
     except Exception as e:
         return JSONResponse(status_code=400, content={"error": str(e)})
 
-
-# ══════════════════════════════════════════════════════════════════════
-# Gradio UI
-# ══════════════════════════════════════════════════════════════════════
 
 TASK_IDS   = [t["id"] for t in TASKS]
 TASK_LABEL = {t["id"]: f"[{t['difficulty'].upper()}] {t['title']}" for t in TASKS}
@@ -169,7 +154,6 @@ with gr.Blocks(title="🧠 Smart Code Review",
                css=CSS) as gradio_app:
 
     state = gr.State({})
-
     gr.Markdown("# 🧠 Smart Code Review", elem_id="header")
     gr.Markdown("An AI-powered code review environment. Pick a buggy Python task, "
                 "run the AI agent or submit your own fix, and see how it scores.")
@@ -193,7 +177,7 @@ with gr.Blocks(title="🧠 Smart Code Review",
 
     with gr.Tabs():
         with gr.TabItem("🤖  AI Agent"):
-            gr.Markdown("> Runs GPT-4o with self-reflection. Requires `OPENAI_API_KEY` secret.")
+            gr.Markdown("> Runs GPT-4o with self-reflection. Requires OPENAI_API_KEY secret.")
             agent_btn    = gr.Button("Run AI Agent ⚡", variant="primary")
             agent_reward = gr.Markdown("*Run the agent to see results.*")
             agent_scores = gr.Markdown()
@@ -224,11 +208,8 @@ with gr.Blocks(title="🧠 Smart Code Review",
                      outputs=[manual_reward, manual_scores, state])
 
 
-# ══════════════════════════════════════════════════════════════════════
-# Mount Gradio inside FastAPI and launch
-# ══════════════════════════════════════════════════════════════════════
-
-app = gr.mount_gradio_app(api, gradio_app, path="/gradio")
+# Mount Gradio at ROOT so UI shows at the main Space URL
+app = gr.mount_gradio_app(api, gradio_app, path="/")
 
 
 def main():
