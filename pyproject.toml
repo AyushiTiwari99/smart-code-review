@@ -5,6 +5,7 @@ build-backend = "setuptools.backends.legacy:build"
 [project]
 name = "smart-code-review"
 version = "1.0.0"
+<<<<<<< HEAD
 description = "An OpenEnv-compatible environment for AI-powered code review"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -18,6 +19,22 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "httpx"]
+=======
+description = "AI-powered code review environment built on OpenEnv"
+requires-python = ">=3.11"
+dependencies = [
+    "openenv-core",
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.27.0",
+    "websockets>=12.0",
+    "pydantic>=2.0.0",
+    "openai>=1.0.0",
+    "gradio>=4.0.0",
+]
+
+[project.scripts]
+server = "app:main"
+>>>>>>> 2f9b2c91317ce471fa7ec2f2585c5c6b8ab69a14
 
 [tool.setuptools.packages.find]
 where = ["."]

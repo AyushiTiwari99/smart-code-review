@@ -1,12 +1,35 @@
 name: smart-code-review
-version: "1.0"
+version: "1.0.0"
 description: >
   An AI-powered code review environment where agents identify bugs,
   classify them, and submit fixes. Scored on accuracy, line identification,
   compile success, and test case results.
 
+tags:
+  - openenv
+  - code-review
+  - reinforcement-learning
+  - python
+
+runtime:
+  language: python
+  python_version: "3.11"
+  install: pip install -r requirements.txt
+  entry_point: app.py
+
 env_class: CodeReviewEnv
 env_module: environment
+
+endpoints:
+  reset:
+    method: POST
+    path: /reset
+  step:
+    method: POST
+    path: /step
+  state:
+    method: GET
+    path: /state
 
 interface:
   reset:
@@ -28,8 +51,6 @@ interface:
         type: string
       buggy_code:
         type: string
-      done:
-        type: boolean
 
   step:
     description: Submit a bug fix action and receive a reward
@@ -76,12 +97,10 @@ tasks:
     difficulty: easy
     bug_type: off-by-one
     bug_line: 3
-
   - id: medium_mutable_default
     difficulty: medium
     bug_type: mutable-default-argument
     bug_line: 1
-
   - id: hard_missing_validation
     difficulty: hard
     bug_type: missing-validation
