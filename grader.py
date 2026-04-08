@@ -24,10 +24,10 @@ Score breakdown:
     reasoning_score — explanation quality (length, keyword coverage)
 
 Final score = 0.85 * base_score + 0.15 * reasoning_score
+Scores are always strictly between 0.01 and 0.99.
 """
 
 from codeverifier import run_code, check_test_cases, run_adversarial_tests
-
 
 # ── Weights ────────────────────────────────────────────────────────
 WEIGHTS = {
@@ -36,6 +36,15 @@ WEIGHTS = {
     "compile": 0.20,
     "test":    0.30,
 }
+
+# Scores must be STRICTLY between 0 and 1
+SCORE_FLOOR = 0.01
+SCORE_CEIL  = 0.99
+
+
+def _clamp(score: float) -> float:
+    """Clamp score to strictly (0, 1) — never exactly 0.0 or 1.0."""
+    return float(max(SCORE_FLOOR, min(SCORE_CEIL, score)))
 
 
 # ── Public API ─────────────────────────────────────────────────────
@@ -50,7 +59,7 @@ def grade(task: dict, action: dict) -> dict:
 
     Returns:
         {
-            "final_reward":   float,   # 0.0 – 1.0
+            "final_reward":   float,   # strictly in (0, 1)
             "issue_score":    float,
             "line_score":     float,
             "compile_score":  float,
@@ -63,27 +72,26 @@ def grade(task: dict, action: dict) -> dict:
     fix      = action.get("fix", "") or ""
     bug_line = action.get("bug_line", -1)
 
-    # issues: accept list[str] or str — join list to single string
-    raw_issues = action.get("issues", "") or ""
+    raw_issues  = action.get("issues", "") or ""
     issues_list = raw_issues if isinstance(raw_issues, list) else ([raw_issues] if raw_issues else [])
-    issues = " ".join(issues_list) if issues_list else str(raw_issues)
+    issues      = " ".join(issues_list) if issues_list else str(raw_issues)
 
-    # ── Axis 1: issue description (0.0 or 1.0) ─────────────────────
+    # ── Axis 1: issue description ───────────────────────────────────
     issue_score = _score_issues(
         agent_issues=issues,
         expected_type=task.get("bug_type", ""),
     )
 
-    # ── Axis 2: line identification (0.0 or 1.0) ───────────────────
+    # ── Axis 2: line identification ─────────────────────────────────
     line_score = _score_line(
         agent_line=bug_line,
         correct_line=task.get("bug_line", -1),
     )
 
-    # ── Axis 3: compile / runtime check (0.0 or 1.0) ───────────────
+    # ── Axis 3: compile / runtime check ────────────────────────────
     compile_score, compile_output = _score_compile(fix)
 
-    # ── Axis 4: test cases (0.0 – 1.0, partial credit) ─────────────
+    # ── Axis 4: test cases ──────────────────────────────────────────
     test_cases = task.get("test_cases", [])
     test_score, tests_passed, tests_total = _score_tests(fix, test_cases)
 
@@ -116,14 +124,15 @@ def grade(task: dict, action: dict) -> dict:
     except Exception:
         _suspicious = False
 
-    # ── Gaming penalty (applied after final score, before clamp) ────
+    # ── Gaming penalty ──────────────────────────────────────────────
     if _suspicious:
         final -= 0.3
 
-    final = max(0.0, min(1.0, final))
+    # ── Clamp strictly between 0.01 and 0.99 ───────────────────────
+    final = _clamp(final)
 
     return {
-        "final_reward":  float(f"{float(final):.4f}"),
+        "final_reward":  float(f"{final:.4f}"),
         "issue_score":   float(f"{float(issue_score):.4f}"),
         "line_score":    float(f"{float(line_score):.4f}"),
         "compile_score": float(f"{float(compile_score):.4f}"),
@@ -132,15 +141,15 @@ def grade(task: dict, action: dict) -> dict:
         "tests_total":      tests_total,
         "reasoning_score":  float(f"{float(reasoning_score):.4f}"),
         "breakdown": {
-            "issue_matched":      bool(issue_score),
-            "line_correct":       bool(line_score),
-            "code_compiles":      bool(compile_score),
-            "compile_output":     compile_output,
-            "tests_passed":       tests_passed,
-            "tests_total":        tests_total,
-            "adversarial":        is_adversarial,
-            "adversarial_reason": adversarial_reason,
-            "suspicious_fix":     _suspicious,
+            "issue_matched":        bool(issue_score),
+            "line_correct":         bool(line_score),
+            "code_compiles":        bool(compile_score),
+            "compile_output":       compile_output,
+            "tests_passed":         tests_passed,
+            "tests_total":          tests_total,
+            "adversarial":          is_adversarial,
+            "adversarial_reason":   adversarial_reason,
+            "suspicious_fix":       _suspicious,
             "adversarial_detected": _suspicious,
         },
     }
@@ -149,10 +158,6 @@ def grade(task: dict, action: dict) -> dict:
 # ── Axis scorers ───────────────────────────────────────────────────
 
 def _score_issues(agent_issues: str, expected_type: str) -> float:
-    """
-    Return 1.0 if the expected bug type appears anywhere in the agent's
-    issues string (case-insensitive, normalised). 0.0 otherwise.
-    """
     if not expected_type or not agent_issues:
         return 0.0
 
@@ -173,9 +178,6 @@ def _score_issues(agent_issues: str, expected_type: str) -> float:
 
 
 def _score_line(agent_line: int, correct_line: int) -> float:
-    """
-    Return 1.0 if agent_line is within ±1 of the correct line. 0.0 otherwise.
-    """
     try:
         agent_line   = int(agent_line)
         correct_line = int(correct_line)
@@ -186,9 +188,6 @@ def _score_line(agent_line: int, correct_line: int) -> float:
 
 
 def _score_compile(fix: str) -> tuple[float, str]:
-    """
-    Return (1.0, stdout) if the code runs without errors, (0.0, err) otherwise.
-    """
     if not fix.strip():
         return 0.0, "ERROR: empty fix"
 
@@ -197,23 +196,18 @@ def _score_compile(fix: str) -> tuple[float, str]:
 
 
 def score_reasoning(issues: list) -> float:
-    """Score explanation quality per issue based on length and keyword presence."""
     if not issues:
         return 0.0
 
     score = 0.0
-
     for issue in issues:
         text = str(issue).lower()
-
         if len(issue) > 25:
             score += 0.4
-
         if any(word in text for word in [
             "error", "bug", "missing", "incorrect", "validation"
         ]):
             score += 0.3
-
         if any(word in text for word in [
             "index", "loop", "default", "condition", "check"
         ]):
@@ -223,14 +217,6 @@ def score_reasoning(issues: list) -> float:
 
 
 def _score_reasoning(issues_list: list, expected_type: str) -> float:
-    """
-    Evaluate explanation quality independently of correctness.
-
-    Criteria (each adds to score, max 1.0):
-        +0.4  at least one non-empty issue described
-        +0.3  two or more distinct issues listed
-        +0.3  total explanation length >= 30 characters
-    """
     if not issues_list:
         return 0.0
 
@@ -248,7 +234,6 @@ def _score_reasoning(issues_list: list, expected_type: str) -> float:
 
 
 def is_suspicious_fix(original_code: str, fixed_code: str) -> bool:
-    """Return True if fixed_code looks fake or trivially bad."""
     if not fixed_code or not fixed_code.strip():
         return True
     if original_code.strip() == fixed_code.strip():
@@ -259,14 +244,6 @@ def is_suspicious_fix(original_code: str, fixed_code: str) -> bool:
 
 
 def _detect_adversarial(fix: str, original_code: str) -> tuple[bool, str]:
-    """
-    Return (is_adversarial, reason) for clearly fake or low-quality fixes.
-
-    Checks:
-        - empty fix
-        - fix identical to the original buggy code
-        - fix suspiciously short (< 20 chars or < 20% of original length)
-    """
     stripped = fix.strip()
     if not stripped:
         return True, "empty fix"
@@ -281,14 +258,10 @@ def _detect_adversarial(fix: str, original_code: str) -> tuple[bool, str]:
 
 
 def _score_tests(fix: str, test_cases: list) -> tuple[float, int, int]:
-    """
-    Return (ratio, passed, total). Always reports real total even if fix empty.
-    """
     total = len(test_cases)
     if not fix.strip() or not test_cases:
         return 0.0, 0, total
 
-    # check_test_cases returns (score, passed, total)
     score, passed, total = check_test_cases(fix, test_cases)
     ratio = (passed / total) if total > 0 else 0.0
     return round(ratio, 4), passed, total
@@ -312,66 +285,8 @@ if __name__ == "__main__":
         ),
     }
 
-    partial = {
-        "bug_line": 3,
-        "issues": ["logic error in the loop"],
-        "fix": "def sum_list(numbers)\n    return sum(numbers)\n",
-    }
-
-    blank = {
-        "bug_line": None,
-        "issues": [],
-        "fix": "",
-    }
-
     print("=== Easy task — perfect agent ===")
     r = grade(easy_task, perfect)
-    print(f"  final={r['final_reward']}  issue={r['issue_score']}  "
-          f"line={r['line_score']}  compile={r['compile_score']}  "
-          f"test={r['test_score']}  tests={r['tests_passed']}/{r['tests_total']}")
-
-    print("\n=== Easy task — partial agent ===")
-    r = grade(easy_task, partial)
-    print(f"  final={r['final_reward']}  issue={r['issue_score']}  "
-          f"line={r['line_score']}  compile={r['compile_score']}  "
-          f"test={r['test_score']}  tests={r['tests_passed']}/{r['tests_total']}")
-
-    print("\n=== Easy task — blank agent ===")
-    r = grade(easy_task, blank)
-    print(f"  final={r['final_reward']}  issue={r['issue_score']}  "
-          f"line={r['line_score']}  compile={r['compile_score']}  "
-          f"test={r['test_score']}  tests={r['tests_passed']}/{r['tests_total']}")
-
-    hard_task = next(t for t in TASKS if t["id"] == "hard_missing_validation")
-
-    full_fix = (
-        "class BankAccount:\n"
-        "    def __init__(self, owner, balance):\n"
-        "        self.owner = owner\n"
-        "        self.balance = balance\n"
-        "\n"
-        "    def transfer(self, target, amount):\n"
-        "        if amount <= 0:\n"
-        "            raise ValueError('Amount must be positive')\n"
-        "        if self.balance < amount:\n"
-        "            raise ValueError('Insufficient funds')\n"
-        "        if self is target:\n"
-        "            raise ValueError('Cannot transfer to self')\n"
-        "        self.balance -= amount\n"
-        "        target.balance += amount\n"
-        "        return True\n"
-        "\n"
-        "    def get_balance(self):\n"
-        "        return self.balance\n"
-    )
-
-    print("\n=== Hard task — full fix ===")
-    r = grade(hard_task, {
-        "bug_line": 7,
-        "issues": ["missing-validation", "no checks for negative amount, "
-                   "insufficient funds, or self-transfer"],
-        "fix": full_fix,
-    })
     print(f"  final={r['final_reward']}  issue={r['issue_score']}  "
           f"line={r['line_score']}  compile={r['compile_score']}  "
           f"test={r['test_score']}  tests={r['tests_passed']}/{r['tests_total']}")
