@@ -1,70 +1,105 @@
 """
 app.py — Smart Code Review · Hugging Face Space
+================================================
+Exposes:
+  - FastAPI REST endpoints  /reset  /step  /state  (for OpenEnv automated checks)
+  - Gradio web UI at /ui   (for human interaction)
 """
 
-import os
 import json
 import uvicorn
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
-from typing import Optional, List
 
 import gradio as gr
 from environment import CodeReviewEnv
 from tasks import TASKS
 
+# ══════════════════════════════════════════════════════════════════════
+# FastAPI app — OpenEnv REST interface
+# ══════════════════════════════════════════════════════════════════════
+
 api = FastAPI(title="Smart Code Review — OpenEnv API")
+
 _api_env = CodeReviewEnv()
 
-
-class ResetRequest(BaseModel):
-    task_id: Optional[str] = None
-
-
-class StepRequest(BaseModel):
-    bug_line: Optional[int] = -1
-    issues:   Optional[List[str]] = []
-    fix:      Optional[str] = ""
+# Scores must be STRICTLY between 0 and 1
+SCORE_FLOOR = 0.01
+SCORE_CEIL  = 0.99
 
 
-@api.get("/api")
+def _clamp(score) -> float:
+    """Ensure score is strictly between 0 and 1."""
+    try:
+        return float(max(SCORE_FLOOR, min(SCORE_CEIL, float(score))))
+    except Exception:
+        return SCORE_FLOOR
+
+
+def _clamp_result(result: dict) -> dict:
+    """Clamp all score fields in a step result."""
+    if not isinstance(result, dict):
+        return result
+    if "reward" in result:
+        result["reward"] = _clamp(result["reward"])
+    return result
+
+
+@api.get("/")
 def root():
     return {"status": "ok", "name": "Smart Code Review OpenEnv"}
 
 
 @api.post("/reset")
-def reset(req: ResetRequest = ResetRequest()):
+async def api_reset(request: Request):
     try:
-        obs = _api_env.reset(req.task_id if req.task_id else None)
+        body = await request.json()
+        task_id = body.get("task_id", None) if isinstance(body, dict) else None
+    except Exception:
+        task_id = None
+    try:
+        obs = _api_env.reset(task_id)
         return JSONResponse(content=obs)
     except Exception as e:
         return JSONResponse(status_code=400, content={"error": str(e)})
 
 
 @api.post("/step")
-def step(req: StepRequest):
+async def api_step(request: Request):
     try:
-        action = {
-            "bug_line": req.bug_line if req.bug_line is not None else -1,
-            "issues":   req.issues   if req.issues   is not None else [],
-            "fix":      req.fix      if req.fix       is not None else "",
-        }
+        body = await request.json()
+        if not isinstance(body, dict):
+            body = {}
+    except Exception:
+        body = {}
+
+    action = {
+        "bug_line": body.get("bug_line", -1),
+        "issues":   body.get("issues",   []),
+        "fix":      body.get("fix",       ""),
+    }
+
+    try:
         result = _api_env.step(action)
+        # Clamp reward strictly between 0.01 and 0.99 at API level
+        result = _clamp_result(result)
         return JSONResponse(content=result)
     except Exception as e:
         return JSONResponse(status_code=400, content={"error": str(e)})
 
 
 @api.get("/state")
-def state():
+def api_state():
     try:
-        s = _api_env.state()
-        return JSONResponse(content=s)
+        return JSONResponse(content=_api_env.state())
     except Exception as e:
         return JSONResponse(status_code=400, content={"error": str(e)})
 
+
+# ══════════════════════════════════════════════════════════════════════
+# Gradio UI helpers
+# ══════════════════════════════════════════════════════════════════════
 
 TASK_IDS   = [t["id"] for t in TASKS]
 TASK_LABEL = {t["id"]: f"[{t['difficulty'].upper()}] {t['title']}" for t in TASKS}
@@ -93,8 +128,13 @@ def run_inference(task_id: str, state: dict) -> tuple:
     result = env.step(action)
     lr     = env._last_result or {}
     state["last_result"] = result
-    return _reward_bar(result["reward"]), _scores_table(lr), \
-           f"```json\n{json.dumps(action, indent=2)}\n```", action.get("fix", ""), state
+    return (
+        _reward_bar(result["reward"]),
+        _scores_table(lr),
+        f"```json\n{json.dumps(action, indent=2)}\n```",
+        action.get("fix", ""),
+        state,
+    )
 
 
 def run_manual(bug_line: str, issues: str, fix: str, state: dict) -> tuple:
@@ -123,20 +163,20 @@ def _scores_table(lr: dict) -> str:
     if not lr:
         return ""
     rows = [
-        ("Issue description",   lr.get("issue_score", 0),   30),
-        ("Line identification", lr.get("line_score", 0),    20),
+        ("Issue description",   lr.get("issue_score",   0), 30),
+        ("Line identification", lr.get("line_score",    0), 20),
         ("Compile check",       lr.get("compile_score", 0), 20),
-        ("Test cases",          lr.get("test_score", 0),    30),
+        ("Test cases",          lr.get("test_score",    0), 30),
     ]
     tp = lr.get("tests_passed", 0)
-    tt = lr.get("tests_total", 0)
+    tt = lr.get("tests_total",  0)
     md = "| Axis | Score | Weight |\n|---|---|---|\n"
     for label, score, weight in rows:
         emoji = "✅" if score >= 0.99 else "🟡" if score > 0 else "❌"
         extra = f" ({tp}/{tt} tests)" if label == "Test cases" else ""
         md += f"| {emoji} {label}{extra} | `{score:.2f}` | {weight}% |\n"
-    penalty = lr.get("penalty", 0)
-    steps   = lr.get("steps_taken", 0)
+    penalty = lr.get("penalty",       0)
+    steps   = lr.get("steps_taken",   0)
     allowed = lr.get("steps_allowed", 0)
     md += f"\n**Steps:** {steps} / {allowed} allowed"
     if penalty:
@@ -144,31 +184,32 @@ def _scores_table(lr: dict) -> str:
     return md
 
 
-CSS = """
-#header { font-size: 2.2rem; font-weight: 700; }
-footer { display: none !important; }
-"""
+# ══════════════════════════════════════════════════════════════════════
+# Gradio UI
+# ══════════════════════════════════════════════════════════════════════
 
-with gr.Blocks(title="🧠 Smart Code Review",
-               theme=gr.themes.Soft(primary_hue="indigo", neutral_hue="slate"),
-               css=CSS) as gradio_app:
+with gr.Blocks() as gradio_app:
 
     state = gr.State({})
-    gr.Markdown("# 🧠 Smart Code Review", elem_id="header")
-    gr.Markdown("An AI-powered code review environment. Pick a buggy Python task, "
-                "run the AI agent or submit your own fix, and see how it scores.")
+
+    gr.Markdown("# 🧠 Smart Code Review")
+    gr.Markdown(
+        "An AI-powered code review environment. Pick a buggy Python task, "
+        "run the AI agent or submit your own fix, and see how it scores."
+    )
 
     with gr.Row():
         task_dropdown = gr.Dropdown(
             choices=[(TASK_LABEL[tid], tid) for tid in TASK_IDS],
-            value=TASK_IDS[0], label="Select Task", scale=4)
-        load_btn = gr.Button("Load Task ▶", variant="primary", scale=1)
+            value=TASK_IDS[0], label="Select Task", scale=4,
+        )
+        load_btn = gr.Button("Load Task ▶️", variant="primary", scale=1)
 
     task_header = gr.Markdown("*Load a task to begin.*")
 
     with gr.Row():
         with gr.Column(scale=1):
-            task_desc = gr.Textbox(label="Task Description", lines=3, interactive=False)
+            task_desc  = gr.Textbox(label="Task Description", lines=3, interactive=False)
         with gr.Column(scale=2):
             buggy_code = gr.Code(label="Buggy Code", language="python",
                                  lines=14, interactive=False)
@@ -177,7 +218,10 @@ with gr.Blocks(title="🧠 Smart Code Review",
 
     with gr.Tabs():
         with gr.TabItem("🤖  AI Agent"):
-            gr.Markdown("> Runs GPT-4o with self-reflection. Requires OPENAI_API_KEY secret.")
+            gr.Markdown(
+                "> Runs GPT-4o with self-reflection.  \n"
+                "> Requires `HF_TOKEN` or `OPENAI_API_KEY` in Space Secrets."
+            )
             agent_btn    = gr.Button("Run AI Agent ⚡", variant="primary")
             agent_reward = gr.Markdown("*Run the agent to see results.*")
             agent_scores = gr.Markdown()
@@ -189,7 +233,8 @@ with gr.Blocks(title="🧠 Smart Code Review",
         with gr.TabItem("✍️  Manual Submission"):
             gr.Markdown("> Enter your own bug analysis and fix, then click Submit.")
             with gr.Row():
-                manual_line   = gr.Textbox(label="Bug Line Number", placeholder="e.g. 3", scale=1)
+                manual_line   = gr.Textbox(label="Bug Line Number",
+                                           placeholder="e.g. 3", scale=1)
                 manual_issues = gr.Textbox(label="Issues (comma-separated)",
                                            placeholder="e.g. off-by-one", scale=3)
             manual_fix    = gr.Code(label="Your Fixed Code", language="python",
@@ -198,18 +243,30 @@ with gr.Blocks(title="🧠 Smart Code Review",
             manual_reward = gr.Markdown()
             manual_scores = gr.Markdown()
 
-    load_btn.click(load_task, inputs=[task_dropdown, state],
-                   outputs=[task_header, task_desc, buggy_code,
-                            agent_reward, agent_scores, agent_action_md,
-                            agent_fix, manual_reward, state])
-    agent_btn.click(run_inference, inputs=[task_dropdown, state],
-                    outputs=[agent_reward, agent_scores, agent_action_md, agent_fix, state])
-    manual_btn.click(run_manual, inputs=[manual_line, manual_issues, manual_fix, state],
-                     outputs=[manual_reward, manual_scores, state])
+    load_btn.click(
+        load_task,
+        inputs=[task_dropdown, state],
+        outputs=[task_header, task_desc, buggy_code,
+                 agent_reward, agent_scores, agent_action_md,
+                 agent_fix, manual_reward, state],
+    )
+    agent_btn.click(
+        run_inference,
+        inputs=[task_dropdown, state],
+        outputs=[agent_reward, agent_scores, agent_action_md, agent_fix, state],
+    )
+    manual_btn.click(
+        run_manual,
+        inputs=[manual_line, manual_issues, manual_fix, state],
+        outputs=[manual_reward, manual_scores, state],
+    )
 
 
-# Mount Gradio at ROOT so UI shows at the main Space URL
-app = gr.mount_gradio_app(api, gradio_app, path="/")
+# ══════════════════════════════════════════════════════════════════════
+# Mount Gradio inside FastAPI and launch
+# ══════════════════════════════════════════════════════════════════════
+
+app = gr.mount_gradio_app(api, gradio_app, path="/ui")
 
 
 def main():
