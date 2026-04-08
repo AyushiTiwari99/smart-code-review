@@ -8,6 +8,11 @@
 👉 **[Live Demo — Hugging Face Spaces](https://huggingface.co/spaces/ayushiTiwarii/smart-code-review)**
 🔗 **[GitHub Repository](https://github.com/AyushiTiwari99/smart-code-review)**
 
+
+## 🎥 Demo Video
+
+👉 Watch here: [Click to view demo](https://www.youtube.com/watch?v=W2JIrwh2OeY)
+
 ### 🏆 Why This Matters
 This environment evaluates not just correctness — but **reasoning quality, robustness to adversarial fixes, and real-world debugging ability**, making it a practical benchmark for production-grade AI code review agents.
 
