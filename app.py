@@ -230,5 +230,10 @@ with gr.Blocks(title="🧠 Smart Code Review",
 
 app = gr.mount_gradio_app(api, gradio_app, path="/gradio")
 
-if __name__ == "__main__":
+
+def main():
     uvicorn.run(app, host="0.0.0.0", port=7860)
+
+
+if __name__ == "__main__":
+    main()
